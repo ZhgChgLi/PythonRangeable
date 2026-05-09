@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rangeable"
+version = "1.0.0"
+description = "Hashable-element interval set with first-insert ordered active queries."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "ZhgChgLi", email = "zhgchgli@gmail.com" }]
+keywords = ["interval", "range", "merge", "boundary-events", "rfc"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Libraries",
+  "Typing :: Typed",
+]
+
+[project.urls]
+Homepage      = "https://github.com/ZhgChgLi/PythonRangeable"
+Source        = "https://github.com/ZhgChgLi/PythonRangeable"
+Documentation = "https://github.com/ZhgChgLi/RangeableRFC/blob/main/RFC.md"
+Issues        = "https://github.com/ZhgChgLi/PythonRangeable/issues"
+Changelog     = "https://github.com/ZhgChgLi/PythonRangeable/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "build>=1.2", "twine>=5"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rangeable"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "src/rangeable/**/*.py",
+  "src/rangeable/py.typed",
+  "README.md",
+  "CHANGELOG.md",
+  "LICENSE",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
