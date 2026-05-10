@@ -21,6 +21,21 @@ class InsertResult(Enum):
     IDEMPOTENT = "idempotent"
 
 
+class RemoveResult(Enum):
+    """Outcome of :meth:`DisjointSet.remove`. The owning :class:`Rangeable`
+    bumps its version counter only on ``MUTATED`` / ``MUTATED_BECAME_EMPTY``.
+
+    ``MUTATED_BECAME_EMPTY`` additionally signals to the owner that the
+    element MUST be eagerly pruned per RFC §4.10 (N1) — the per-element list
+    is now empty and the key must be excised from ``intervals``,
+    ``insertion_order``, and ``ord``.
+    """
+
+    IDEMPOTENT = "idempotent"
+    MUTATED = "mutated"
+    MUTATED_BECAME_EMPTY = "mutated_became_empty"
+
+
 class DisjointSet:
     """Maintains the RFC §5.1 (I1) invariant for one element:
 
@@ -102,3 +117,174 @@ class DisjointSet:
         merged = Interval(new_lo, new_hi)
         self._entries[i0:to_merge_end] = [merged]
         return InsertResult.MUTATED
+
+    def remove(self, lo: int, hi: int) -> RemoveResult:
+        """Remove the closed interval ``[lo, hi]`` per RFC §6.6.
+
+        Returns :attr:`RemoveResult.IDEMPOTENT` when no entry overlaps
+        (caller MUST NOT bump version per §4.10 N3),
+        :attr:`RemoveResult.MUTATED` when entries shrink but the list stays
+        non-empty, :attr:`RemoveResult.MUTATED_BECAME_EMPTY` when the last
+        interval is removed and the owner MUST eagerly prune the key per
+        §4.10 (N1).
+        """
+        if lo > hi:
+            raise InvalidIntervalError(f"lo ({lo}) > hi ({hi})")
+
+        n = len(self._entries)
+        # Step 3 of §6.6: bsearch for the leftmost entry with ``iv.hi >= lo``.
+        # Equivalent (under the bisect-by-key contract) to
+        # ``bisect_left(entries, lo, key=lambda iv: iv.hi + 1)`` — the same
+        # predicate used by insert (and thus the same Int.min underflow guard).
+        i = bisect.bisect_left(self._entries, lo, key=lambda iv: iv.hi + 1)
+
+        # Step 4: quick-exit when nothing in R(e) overlaps [lo, hi].
+        if i == n or self._entries[i].lo > hi:
+            return RemoveResult.IDEMPOTENT
+
+        # Step 5: sweep all overlapping entries, build replacements.
+        to_replace_start = i
+        replacements: list[Interval] = []
+        while i < n and self._entries[i].lo <= hi:
+            iv = self._entries[i]
+            # Left residual only when iv.lo < lo (guards Int.min underflow
+            # on ``lo - 1``).
+            if iv.lo < lo:
+                replacements.append(Interval(iv.lo, lo - 1))
+            # Right residual only when hi < iv.hi (guards Int.max overflow
+            # on ``hi + 1``).
+            if hi < iv.hi:
+                replacements.append(Interval(hi + 1, iv.hi))
+            i += 1
+        to_replace_end = i
+
+        # Step 6: splice. Python's slice-assign is the natural primitive.
+        self._entries[to_replace_start:to_replace_end] = replacements
+
+        # Step 7: signal eager-prune to caller when list is now empty.
+        if not self._entries:
+            return RemoveResult.MUTATED_BECAME_EMPTY
+        return RemoveResult.MUTATED
+
+    # ------------------------------------------------------------------ #
+    # List-level primitives for set operations (§6.10–§6.13).
+    # These operate on Interval lists, not on DisjointSet instances, so
+    # the union/intersection/difference/symmetric_difference paths can
+    # reuse them without per-call DisjointSet construction overhead.
+    # ------------------------------------------------------------------ #
+
+
+def _append_or_merge(out: list[Interval], iv: Interval) -> None:
+    """Two-pointer helper from RFC §6.10.
+
+    Appends ``iv`` to ``out``, collapsing into the last entry when overlap
+    or integer-adjacency (``out[-1].hi + 1 >= iv.lo``) is detected.
+    """
+    if not out or out[-1].hi + 1 < iv.lo:
+        out.append(iv)
+    else:
+        last = out[-1]
+        if iv.hi > last.hi:
+            out[-1] = Interval(last.lo, iv.hi)
+
+
+def merge_disjoint_lists(
+    list_a: list[Interval], list_b: list[Interval]
+) -> list[Interval]:
+    """Two-pointer linear merge of two (I1)-canonical lists, RFC §6.10.
+
+    O(|list_a| + |list_b|). Output is (I1)-canonical (sorted, disjoint,
+    non-adjacent) thanks to ``_append_or_merge``'s adjacency collapse.
+    """
+    out: list[Interval] = []
+    i, j = 0, 0
+    n_a, n_b = len(list_a), len(list_b)
+    while i < n_a and j < n_b:
+        if list_a[i].lo <= list_b[j].lo:
+            _append_or_merge(out, list_a[i])
+            i += 1
+        else:
+            _append_or_merge(out, list_b[j])
+            j += 1
+    while i < n_a:
+        _append_or_merge(out, list_a[i])
+        i += 1
+    while j < n_b:
+        _append_or_merge(out, list_b[j])
+        j += 1
+    return out
+
+
+def intersect_disjoint_lists(
+    list_a: list[Interval], list_b: list[Interval]
+) -> list[Interval]:
+    """Two-pointer pairwise intersection, RFC §6.11.
+
+    O(|list_a| + |list_b|). Output is (I1)-canonical without any explicit
+    adjacency-collapse step (Lemma 6.11.A): consecutive output entries
+    inherit a ≥ 2 integer gap from the inputs.
+    """
+    out: list[Interval] = []
+    i, j = 0, 0
+    n_a, n_b = len(list_a), len(list_b)
+    while i < n_a and j < n_b:
+        a_iv = list_a[i]
+        b_iv = list_b[j]
+        lo = a_iv.lo if a_iv.lo > b_iv.lo else b_iv.lo
+        hi = a_iv.hi if a_iv.hi < b_iv.hi else b_iv.hi
+        if lo <= hi:
+            out.append(Interval(lo, hi))
+        if a_iv.hi <= b_iv.hi:
+            i += 1
+        else:
+            j += 1
+    return out
+
+
+def subtract_disjoint_lists(
+    list_a: list[Interval], list_b: list[Interval]
+) -> list[Interval]:
+    """Two-pointer subtraction ``list_a ∖ list_b``, RFC §6.12.
+
+    O(|list_a| + |list_b|). Output is (I1)-canonical. Underflow / overflow
+    safe: ``L_b[j].lo - 1`` only computed when ``L_b[j].lo > current_lo``;
+    ``L_b[j].hi + 1`` only when ``L_b[j].hi < current_hi``.
+    """
+    out: list[Interval] = []
+    n_a, n_b = len(list_a), len(list_b)
+    if n_a == 0:
+        return out
+    if n_b == 0:
+        return list(list_a)
+
+    i = 0
+    j = 0
+    current_lo: int | None = None
+    current_hi: int | None = None
+    while i < n_a:
+        if current_lo is None:
+            current_lo = list_a[i].lo
+            current_hi = list_a[i].hi
+        # Skip L_b entries strictly before [current_lo, current_hi].
+        while j < n_b and list_b[j].hi < current_lo:
+            j += 1
+        if j == n_b or list_b[j].lo > current_hi:
+            # No more cuts on this entry: commit and advance.
+            out.append(Interval(current_lo, current_hi))
+            i += 1
+            current_lo = None
+            current_hi = None
+            continue
+        # list_b[j] overlaps [current_lo, current_hi]; cut.
+        if list_b[j].lo > current_lo:
+            out.append(Interval(current_lo, list_b[j].lo - 1))
+        if list_b[j].hi < current_hi:
+            # Right residual becomes the new current.
+            current_lo = list_b[j].hi + 1
+            j += 1
+        else:
+            # list_b[j] swallows the rest of the current entry.
+            i += 1
+            current_lo = None
+            current_hi = None
+    return out

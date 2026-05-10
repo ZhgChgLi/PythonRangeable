@@ -24,3 +24,4 @@ __all__ = [
     "InvalidIntervalError",
     "__version__",
 ]
+
